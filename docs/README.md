@@ -32,7 +32,13 @@ Claude code with `ANTHROPIC_BASE_URL=` set to point to my internal LLM server. R
 
 An Apple M3 Ultra chip with 32-core CPU, 80‑core GPU, 32-core Neural Engine with 512GB unified memory
 
+## Runtime
+
+Openshell 0.1.3  
+
 ## Results
+
+Time to complete: ~9hrs
 
 The one-shot resulted in code that compile and ran but the following error was generated.
 

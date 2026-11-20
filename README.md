@@ -207,7 +207,9 @@ workspace read-only; a mutating call from a reviewer surfaces as an
 
 ## Documentation
 
-- [`example-usage.md`](example-usage.md) — correct usage per component, CLI
+- [`prompt.md`](docs/prompt.md)
+- [`example-usage.md`](docs/example-usage.mdexample-usage.md) — correct usage per component, CLI
   and library level.
-- [`tutorial.md`](tutorial.md) — an end-to-end walk-through exercising every
+- [`tutorial.md`](docs/tutorial.mdtutorial.md) — an end-to-end walk-through exercising every
   feature against a local model.
+
