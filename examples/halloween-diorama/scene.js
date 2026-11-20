@@ -1,0 +1,630 @@
+
+'use strict';
+/* ============================================================================
+   MIDNIGHT RAIN — pixel-art Halloween diorama, looping lofi video cover
+   - Rendered at 480x270 logical pixels, upscaled 4x to 1920x1080 (crisp).
+   - One master clock: every animation is a function of t = now mod LOOP,
+     using only integer cycles per loop -> a mathematically seamless loop
+     that can run for hours (or days) without a visible seam.
+   - Palette: cold indigo/teal rainy night  vs  warm amber firelight.
+   ============================================================================ */
+
+const W = 480, H = 270, SCALE = 4, LOOP = 12, TAU = Math.PI * 2, GT = 196;
+
+const canvas = document.getElementById('scene');
+const ctx = canvas.getContext('2d');
+ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+ctx.imageSmoothingEnabled = false;
+
+/* deterministic RNG (identical scene every run) */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const R = mulberry32(31337);
+
+/* periodic flicker: sum of integer-harmonic sines, quantized to steps */
+function flick(t, s){
+  let v = 0;
+  v += Math.sin(TAU*t/LOOP*4  + s*12.9898) * 0.38;
+  v += Math.sin(TAU*t/LOOP*9  + s*78.2330) * 0.27;
+  v += Math.sin(TAU*t/LOOP*13 + s*39.4250) * 0.19;
+  v += Math.sin(TAU*t/LOOP*23 + s*27.1630) * 0.16;
+  v = 0.5 + 0.5*v;
+  if(v < 0) v = 0; else if(v > 1) v = 1;
+  return Math.round(v*14)/14;
+}
+
+/* chunky pixel glow sprites (gradient on a small canvas, NN-upscaled) */
+function mkGlow(r,g,b){
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const gr = x.createRadialGradient(32,32,2, 32,32,32);
+  gr.addColorStop(0.00, 'rgba('+r+','+g+','+b+',0.85)');
+  gr.addColorStop(0.35, 'rgba('+r+','+g+','+b+',0.30)');
+  gr.addColorStop(1.00, 'rgba('+r+','+g+','+b+',0)');
+  x.fillStyle = gr; x.fillRect(0,0,64,64);
+  return c;
+}
+const G_WARM  = mkGlow(255,164, 72);
+const G_AMBER = mkGlow(255,196,112);
+const G_COOL  = mkGlow(128,168,232);
+const G_SMOKE = mkGlow(122,136,168);
+const G_FOG   = mkGlow(148,172,212);
+
+/* pixel cloud shape: union of 3 ellipses, precomputed row spans */
+function makeCloud(w, h, seed){
+  const blobs = [
+    [0.30, 0.62, 0.34, 0.50],
+    [0.58, 0.45, 0.30, 0.44],
+    [0.78, 0.62, 0.26, 0.38]
+  ];
+  const rows = [];
+  for(let y = 0; y < h; y++){
+    const segs = [];
+    for(const bl of blobs){
+      const dy = (y/h - bl[1]);
+      if(Math.abs(dy) > bl[3]) continue;
+      const dx = bl[2] * Math.sqrt(1 - dy*dy/(bl[3]*bl[3]));
+      segs.push([Math.round((bl[0]-dx)*w), Math.round((bl[0]+dx)*w)]);
+    }
+    if(!segs.length) continue;
+    segs.sort((a,b)=>a[0]-b[0]);
+    let s = segs[0][0], e = segs[0][1];
+    for(let i = 1; i < segs.length; i++){
+      if(segs[i][0] <= e+1){ if(segs[i][1] > e) e = segs[i][1]; }
+      else { rows.push([y, s, e]); s = segs[i][0]; e = segs[i][1]; }
+    }
+    rows.push([y, s, e]);
+  }
+  return rows;
+}
+function drawCloud(rows, x, y, color, alpha){
+  ctx.globalAlpha = alpha; ctx.fillStyle = color;
+  for(const r of rows) ctx.fillRect(Math.round(x+r[1]), Math.round(y+r[0]), r[2]-r[1]+1, 1);
+  ctx.globalAlpha = 1;
+}
+const CLOUD_A = makeCloud(64, 22, 11);
+const CLOUD_B = makeCloud(84, 26, 23);
+const CLOUD_C = makeCloud(46, 18, 37);
+const CLOUD_MOON = makeCloud(70, 20, 53);
+
+/* ============================================================================
+   STATIC SCENE  (drawn once to an offscreen base canvas)
+   ============================================================================ */
+const base = document.createElement('canvas'); base.width = W; base.height = H;
+const b = base.getContext('2d');
+
+function buildBase(){
+  /* sky - cold indigo night, slightly brighter toward the horizon */
+  const sky = b.createLinearGradient(0, 0, 0, GT);
+  sky.addColorStop(0.00, '#04061a');
+  sky.addColorStop(0.40, '#081030');
+  sky.addColorStop(0.72, '#0f1c40');
+  sky.addColorStop(1.00, '#17294e');
+  b.fillStyle = sky; b.fillRect(0, 0, W, GT);
+
+  /* moon - cold pale glow, upper left */
+  b.save(); b.globalCompositeOperation = 'lighter';
+  b.globalAlpha = 0.5; b.drawImage(G_COOL, 88-62, 52-62, 124, 124);
+  b.restore();
+  b.fillStyle = '#d5e4f4';
+  for(let dy = -20; dy <= 20; dy++){
+    const w = Math.round(Math.sqrt(Math.max(0, 400 - dy*dy)));
+    b.fillRect(88-w, 52+dy, w*2, 1);
+  }
+  b.fillStyle = '#b7cbe4';
+  b.fillRect(80, 46, 3, 3); b.fillRect(93, 58, 4, 3);
+  b.fillRect(88, 63, 2, 2); b.fillRect(95, 42, 2, 2); b.fillRect(79, 57, 2, 2);
+
+  /* distant tree ridges (pixel-stepped, cooler in the distance) */
+  b.fillStyle = '#0a142c';
+  for(let x = 0; x < W; x++){
+    const h = GT - 14 - Math.round((8*Math.sin(x*0.021+1.3) + 5*Math.sin(x*0.053+0.4)) / 2) * 2;
+    b.fillRect(x, h, 1, GT - h);
+  }
+  b.fillStyle = '#0d1634';
+  for(let x = 0; x < W; x++){
+    const h = GT - 7 - Math.round((6*Math.sin(x*0.033+2.1) + 3*Math.sin(x*0.071+0.9)) / 2) * 2;
+    b.fillRect(x, h, 1, GT - h);
+  }
+
+  /* two pines flanking the house */
+  function pine(cx, baseY, hgt, col){
+    b.fillStyle = col;
+    for(let i = 0; i < 3; i++){
+      const top = baseY - hgt + i * hgt * 0.26;
+      const w = 4 + i * 5;
+      b.fillRect(cx - w, top, w*2, Math.round(hgt*0.34));
+    }
+    b.fillRect(cx-1, baseY - 3, 2, 3);
+  }
+  pine(132, GT, 26, '#0d1636');
+  pine(404, GT, 22, '#0c1534');
+
+  /* ---------- haunted house ---------- */
+  const wall = '#15204a', shade = '#101a3c', trim = '#223364', roof = '#0a1128';
+
+  b.fillStyle = wall; b.fillRect(196, 118, 140, GT - 118);
+  b.fillStyle = shade; b.fillRect(330, 118, 6, GT - 118);
+  b.fillStyle = '#111b3e';
+  for(let y = 124; y < GT; y += 7) b.fillRect(196, y, 140, 1);
+  b.fillStyle = trim; b.fillRect(194, 116, 144, 2);
+
+  b.fillStyle = roof;
+  for(let y = 84; y <= 118; y++){
+    const w = Math.round((y - 84) / 34 * 76);
+    b.fillRect(266 - w, y, w*2 + 1, 1);
+  }
+  b.fillStyle = trim;
+  for(let y = 84; y <= 118; y += 4){
+    const w = Math.round((y - 84) / 34 * 76);
+    b.fillRect(266 - w, y, 1, 1); b.fillRect(266 + w, y, 1, 1);
+  }
+
+  b.fillStyle = wall; b.fillRect(234, 66, 64, 52);
+  b.fillStyle = shade; b.fillRect(292, 66, 6, 52);
+  b.fillStyle = '#111b3e';
+  for(let y = 72; y < 118; y += 7) b.fillRect(234, y, 64, 1);
+  b.fillStyle = roof;
+  for(let y = 32; y <= 66; y++){
+    const w = Math.round((y - 32) / 34 * 38);
+    b.fillRect(266 - w, y, w*2 + 1, 1);
+  }
+  b.fillStyle = trim; b.fillRect(230, 64, 72, 2);
+  b.fillStyle = '#2a3c6e';
+  b.fillRect(265, 24, 2, 8); b.fillRect(261, 27, 10, 1); b.fillRect(267, 22, 3, 2);
+
+  b.fillStyle = wall; b.fillRect(310, 80, 10, 30);
+  b.fillStyle = trim; b.fillRect(308, 78, 14, 3);
+  b.fillStyle = '#05070f'; b.fillRect(311, 78, 8, 2);
+
+  function window_(x, y, w, h){
+    b.fillStyle = trim; b.fillRect(x-1, y-1, w+2, h+2);
+    b.fillStyle = '#6e4a1e'; b.fillRect(x, y, w, h);
+    b.fillStyle = '#4a3212';
+    b.fillRect(x + (w>>1) - 1, y, 2, h);
+    b.fillRect(x, y + (h>>1) - 1, w, 2);
+    b.fillStyle = trim; b.fillRect(x-2, y+h+1, w+4, 2);
+  }
+  window_(255, 75, 22, 18);
+  window_(205, 133, 20, 24);
+  window_(305, 133, 20, 24);
+
+  b.fillStyle = trim; b.fillRect(253, 149, 22, 47);
+  b.fillStyle = '#0a0f22'; b.fillRect(255, 152, 18, 44);
+  b.fillStyle = '#c9a04e'; b.fillRect(270, 174, 1, 2);
+  b.fillStyle = trim; b.fillRect(246, 146, 42, 2);
+  b.fillStyle = '#0d1430';
+  b.fillRect(248, 148, 2, 48); b.fillRect(278, 148, 2, 48);
+  b.fillStyle = '#223364'; b.fillRect(284, 148, 8, 12);
+  b.fillStyle = '#ffd98a'; b.fillRect(285, 151, 6, 8);
+  b.fillStyle = '#223364'; b.fillRect(287, 152, 2, 8);
+
+  b.fillStyle = '#0d1534';
+  b.fillRect(148, 183, 46, 1); b.fillRect(148, 190, 46, 1);
+  b.fillRect(338, 183, 46, 1); b.fillRect(338, 190, 46, 1);
+  b.fillStyle = '#101a3c';
+  for(let x = 148; x < 194; x += 5) b.fillRect(x, 177, 2, 19);
+  for(let x = 338; x < 384; x += 5) b.fillRect(x, 177, 2, 19);
+
+  function grave(x, y, w, h, cross){
+    b.fillStyle = '#12204a';
+    b.fillRect(x, y, w, h);
+    b.fillRect(x+1, y-1, w-2, 1);
+    if(cross){ b.fillStyle = '#0a1128'; b.fillRect(x + (w>>1), y+2, 1, h-4); b.fillRect(x+2, y+3, w-4, 1); }
+  }
+  grave(390, 188, 8, 8, true);
+  grave(404, 191, 7, 5, false);
+  grave(417, 189, 6, 7, true);
+
+  /* ---------- wet ground ---------- */
+  b.fillStyle = '#10182f'; b.fillRect(0, GT, W, H - GT);
+  b.fillStyle = '#2c3f6e'; b.fillRect(0, GT, W, 1);
+  b.fillStyle = '#1a2748'; b.fillRect(0, GT+1, W, 1);
+  b.fillStyle = '#0b132c';
+  const jointsY = [206, 216, 228, 242, 258];
+  for(let r = 0; r < jointsY.length; r++){
+    for(let x = (r%2)*5; x < W; x += 9) b.fillRect(x, jointsY[r], 7, 1);
+  }
+  for(let i = 0; i < 1000; i++){
+    const x = (R()*W)|0, y = (GT+3 + R()*(H-GT-5))|0;
+    const p = R();
+    b.fillStyle = p < 0.6 ? '#0f1834' : (p < 0.85 ? '#18244a' : '#223158');
+    b.fillRect(x, y, 1, 1);
+  }
+  for(let i = 0; i < 160; i++){
+    const x = (R()*W)|0, y = (GT+3 + R()*(H-GT-5))|0;
+    b.fillStyle = 'rgba(46,65,112,0.55)';
+    b.fillRect(x, y, 1, 1);
+  }
+
+  function puddle(px, py, rx, ry){
+    for(let dy = -ry; dy <= ry; dy++){
+      const w = Math.round(rx * Math.sqrt(1 - (dy*dy)/(ry*ry)));
+      b.fillStyle = '#1b2a50'; b.fillRect(px-w, py+dy, w*2, 1);
+    }
+    for(let dy = -ry+2; dy <= ry-2; dy++){
+      const w = Math.round((rx-3) * Math.sqrt(1 - (dy*dy)/Math.max(1,(ry-2)*(ry-2))));
+      b.fillStyle = '#22345e'; b.fillRect(px-w, py+dy, w*2, 1);
+    }
+    b.fillStyle = 'rgba(53,73,124,0.6)';
+    const wt = Math.round(rx*0.9); b.fillRect(px-wt, py-ry+1, wt*2, 1);
+  }
+  puddle(140, 214, 16, 5);
+  puddle(252, 226, 20, 6);
+  puddle(342, 212, 13, 4);
+  puddle( 78, 252, 15, 5);
+
+  b.fillStyle = '#070c1c'; b.fillRect(0, 256, W, H - 256);
+  b.fillStyle = '#0b1230';
+  for(let i = 0; i < 70; i++){
+    const x = (R()*W)|0, y = (254 + R()*3)|0, hh = 2 + (R()*3|0);
+    b.fillRect(x, y, 1, hh);
+  }
+
+  /* lamp post (right) */
+  b.fillStyle = '#0b1228'; b.fillRect(419, 250, 13, 4); b.fillRect(421, 248, 9, 2);
+  b.fillStyle = '#0d1430'; b.fillRect(424, 134, 3, 116);
+  b.fillStyle = '#223364'; b.fillRect(418, 120, 15, 14);
+  b.fillStyle = '#ffd98a'; b.fillRect(420, 122, 11, 10);
+  b.fillStyle = '#223364'; b.fillRect(424, 122, 2, 10); b.fillRect(420, 126, 11, 2);
+  b.fillRect(417, 118, 17, 2); b.fillRect(424, 116, 3, 2);
+
+  /* bare dead tree (left) */
+  b.fillStyle = '#0a1026';
+  function branch(x, y, ang, len, w, depth){
+    if(depth === 0 || len < 3) return;
+    for(let s = 0; s < len; s++){
+      const px = x + Math.cos(ang)*s, py = y + Math.sin(ang)*s;
+      const bw = Math.max(1, Math.round(w * (1 - s/len)));
+      b.fillRect(Math.round(px - bw/2), Math.round(py), bw, 1);
+    }
+    const ex = x + Math.cos(ang)*len, ey = y + Math.sin(ang)*len;
+    if(depth >= 2){
+      branch(ex, ey, ang - 0.55 - R()*0.5, len*0.55, w-1, depth-1);
+      branch(ex, ey, ang + 0.45 + R()*0.5, len*0.5,  w-1, depth-1);
+    } else if(R() > 0.35){
+      branch(ex, ey, ang + (R() > 0.5 ? 1 : -1)*(0.4 + R()*0.7), len*0.5, w-1, depth-1);
+    }
+  }
+  branch(72, 258, -Math.PI/2 + 0.06, 74, 5, 4);
+
+  /* pumpkin on a boulder (left foreground) */
+  for(let dy = -8; dy <= 7; dy++){
+    const w = Math.round(17 * Math.sqrt(1 - (dy*dy)/(8*8)));
+    b.fillStyle = dy < -4 ? '#1f2d54' : '#131e40';
+    b.fillRect(67-w, 253+dy, w*2, 1);
+  }
+  for(let dy = -10; dy <= 10; dy++){
+    const w = Math.round(12 * Math.sqrt(1 - (dy*dy)/(11*11)));
+    if(w < 1) continue;
+    b.fillStyle = dy < -4 ? '#e07a30' : '#cf6a26';
+    b.fillRect(67-w, 241+dy, w*2, 1);
+    b.fillStyle = '#9c4a18';
+    for(const off of [-8, -3, 2, 7])
+      if(Math.abs(off) <= w-1) b.fillRect(67+off, 241+dy, 1, 1);
+  }
+  b.fillStyle = '#44603d'; b.fillRect(65, 229, 3, 3); b.fillRect(64, 231, 1, 1);
+
+  /* cat body (tail animated live) */
+  b.fillStyle = '#05070f';
+  b.fillRect(154, 172, 8, 6);
+  b.fillRect(156, 168, 5, 5);
+  b.fillRect(156, 166, 1, 2); b.fillRect(160, 166, 1, 2);
+  b.fillStyle = '#9fe8b0';
+  b.fillRect(157, 170, 1, 1); b.fillRect(159, 170, 1, 1);
+
+  /* vignette */
+  const v = b.createRadialGradient(240, 130, 130, 240, 135, 330);
+  v.addColorStop(0, 'rgba(3,5,14,0)');
+  v.addColorStop(1, 'rgba(3,5,14,0.55)');
+  b.fillStyle = v; b.fillRect(0, 0, W, H);
+}
+buildBase();
+
+/* ============================================================================
+   DYNAMIC ELEMENTS  (everything strictly periodic in LOOP = seamless)
+   ============================================================================ */
+
+/* stars: twinkle with integer cycles per loop */
+const stars = [];
+{
+  const rs = mulberry32(991);
+  for(let i = 0; i < 90; i++){
+    const x = rs()*W, y = 6 + rs()*144;
+    if(Math.hypot(x-88, y-52) < 28) continue;
+    stars.push({ x: x|0, y: y|0, k: 1 + (rs()*3|0), ph: rs()*TAU, a: 0.25 + rs()*0.45 });
+  }
+}
+function drawStars(t){
+  ctx.fillStyle = '#cfe2ff';
+  for(const s of stars){
+    const a = s.a * (0.65 + 0.35*Math.sin(TAU*s.k*t/LOOP + s.ph));
+    ctx.globalAlpha = a;
+    ctx.fillRect(s.x, s.y, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* rain: three depth layers, x and y both periodic in t */
+function makeRain(seed, n, gy, cyc, driftM, len, col, alpha){
+  const rs = mulberry32(seed);
+  const drops = [];
+  for(let i = 0; i < n; i++)
+    drops.push({ x0: rs()*(W+20), y0: rs()*(gy+20), gy, cyc, driftM, len, col, alpha });
+  return drops;
+}
+const rainFar  = makeRain(101, 60, 202, 2, 0, 2, '#6b8cc4', 0.40);
+const rainMid  = makeRain(202, 70, 226, 3, 1, 3, '#8fb0e4', 0.55);
+const rainNear = makeRain(303, 60, 262, 4, 1, 4, '#b9d2f2', 0.80);
+
+function drawRainLayer(drops, t){
+  const span = W + 20;
+  for(const d of drops){
+    const y = (d.y0 + (t/LOOP) * d.cyc * (d.gy + 20)) % (d.gy + 20);
+    if(y > d.gy + 2) continue;
+    const x = (d.x0 + d.driftM * span * (t/LOOP)) % span - 10;
+    ctx.globalAlpha = d.alpha; ctx.fillStyle = d.col;
+    if(d.len >= 4){ ctx.fillRect(x, y, 1, 3); ctx.fillRect(x+1, y+3, 1, 1); }
+    else if(d.len === 3){ ctx.fillRect(x, y, 1, 2); ctx.fillRect(x+1, y+2, 1, 1); }
+    else ctx.fillRect(x, y, 1, 2);
+    const s = (y - (d.gy - 1)) / 8;
+    if(s > 0 && s < 1 && d.len >= 3){
+      ctx.globalAlpha = (1 - s) * d.alpha * 0.9;
+      ctx.fillRect(x-1, d.gy, 1, 1);
+      ctx.fillRect(x+1, d.gy, 1, 1);
+      if(s < 0.5){ ctx.fillRect(x-2, d.gy, 1, 1); ctx.fillRect(x+2, d.gy, 1, 1); }
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* chimney smoke: local phase per puff, alpha fades to 0 at both ends */
+const smoke = [];
+{
+  const rs = mulberry32(404);
+  for(let i = 0; i < 12; i++) smoke.push({ off: rs(), s: rs()*TAU });
+}
+function drawSmoke(t){
+  for(const p of smoke){
+    const ph = (t/LOOP + p.off) % 1;
+    const y = 78 - ph * 72;
+    const x = 315 + 15*ph + 7*ph*ph + 2.5*Math.sin(ph*TAU*1.5 + p.s);
+    const sz = 5 + 13*ph;
+    ctx.globalAlpha = 0.30 * Math.sin(Math.PI * ph);
+    ctx.drawImage(G_SMOKE, x - sz/2, y - sz/2, sz, sz*0.82);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* fire sparks rising from the jack-o-lantern */
+const sparks = [];
+{
+  const rs = mulberry32(505);
+  for(let i = 0; i < 16; i++)
+    sparks.push({ off: rs(), n: rs() > 0.5 ? 2 : 1, s: rs()*TAU });
+}
+function drawSparks(t){
+  for(const e of sparks){
+    const ph = ((t/LOOP)*e.n + e.off) % 1;
+    const y = 233 - ph * 36;
+    const x = 67 + ph*5 + 2.2*Math.sin(ph*TAU*2 + e.s);
+    const a = Math.min(1, ph*8) * Math.pow(1 - ph, 1.6) * 0.95;
+    if(a < 0.02) continue;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = ph < 0.5 ? '#ffd166' : '#ff7a33';
+    ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ground fog: soft blobs bobbing with integer cycles */
+function makeFog(seed, y0, n, spread){
+  const rs = mulberry32(seed);
+  const arr = [];
+  for(let i = 0; i < n; i++)
+    arr.push({ x0: rs()*(W+120) - 60, ph: rs()*TAU, a: 0.05 + rs()*0.06, w: 90 + rs()*spread });
+  return { y0, arr };
+}
+const fog1 = makeFog(606, 206, 9, 60);
+const fog2 = makeFog(707, 240, 8, 80);
+function drawFog(f, t){
+  for(const p of f.arr){
+    const x = p.x0 + 30*Math.sin(TAU*t/LOOP + p.ph);
+    const y = f.y0 + 3*Math.sin(TAU*2*t/LOOP + p.ph*2);
+    ctx.globalAlpha = p.a * (0.75 + 0.25*Math.sin(TAU*t/LOOP + p.ph));
+    ctx.drawImage(G_FOG, x - p.w/2, y - 13, p.w, 26);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ground reflections shimmering on the wet stones */
+const refl = [
+  { x: 266, len: 24, s: 1.1 },
+  { x: 215, len: 22, s: 2.2 },
+  { x: 315, len: 22, s: 3.3 },
+  { x: 288, len: 16, s: 4.4 },
+  { x: 425, len: 34, s: 5.5 },
+  { x: 67,  len: 22, s: 6.0 }
+];
+function drawReflections(t){
+  for(let i = 0; i < refl.length; i++){
+    const r = refl[i], f = flick(t, r.s);
+    const col = i === 5 ? 'rgba(255,159,67,' : 'rgba(255,178,92,';
+    for(let j = 0; j < r.len; j++){
+      const a = f * 0.30 * (1 - j/r.len);
+      if(a < 0.02) continue;
+      const xx = r.x + Math.round(Math.sin(j*0.9 + TAU*3*t/LOOP + r.x)*1.3);
+      ctx.fillStyle = col + a.toFixed(3) + ')';
+      ctx.fillRect(xx, GT + 2 + j, 2, 1);
+    }
+  }
+  /* cold moonlight streaks in the puddles */
+  for(const pd of [[140,214],[252,226],[342,212]]){
+    for(let j = 0; j < 9; j++){
+      const a = 0.26 * (1 - j/9) * (0.7 + 0.3*Math.sin(j*0.8 + TAU*2*t/LOOP + pd[0]*0.7));
+      const xx = pd[0] + Math.round(Math.sin(j*1.1 + TAU*3*t/LOOP)*1.5);
+      ctx.fillStyle = 'rgba(159,194,236,' + a.toFixed(3) + ')';
+      ctx.fillRect(xx, pd[1] - 3 + j, 2, 1);
+    }
+  }
+  /* rain ripples */
+  for(const rp of [[252, 226, 0.0], [140, 214, 0.5]]){
+    const ph = ((t/LOOP)*2 + rp[2]) % 1;
+    const rx = 1 + ph*8, ry = Math.max(1, rx*0.38);
+    const a = (1 - ph) * 0.22;
+    ctx.fillStyle = 'rgba(159,194,236,' + a.toFixed(3) + ')';
+    ctx.fillRect(rp[0]-rx, rp[1]-ry, rx*2, 1);
+    ctx.fillRect(rp[0]-rx, rp[1]+ry-1, rx*2, 1);
+    ctx.fillRect(rp[0]-rx, rp[1]-ry, 1, ry*2);
+    ctx.fillRect(rp[0]+rx-1, rp[1]-ry, 1, ry*2);
+  }
+}
+
+/* bat crosses the sky exactly once per loop */
+function drawBat(t){
+  const q = t/LOOP;
+  const x = -24 + q*(W + 48);
+  if(x < -8 || x > W + 8) return;
+  const y = 58 + 14*Math.sin(TAU*2*q);
+  const fr = Math.floor(t*24/LOOP) % 2;
+  ctx.globalAlpha = 0.9; ctx.fillStyle = '#060a18';
+  ctx.fillRect(x+1, y, 3, 2);
+  ctx.fillRect(x+2, y-1, 1, 1);
+  ctx.fillRect(x, y-1, 1, 1); ctx.fillRect(x+4, y-1, 1, 1);
+  if(fr === 0){
+    ctx.fillRect(x-1, y-2, 2, 2); ctx.fillRect(x+5, y-2, 2, 2);
+    ctx.fillRect(x-2, y-3, 1, 1); ctx.fillRect(x+7, y-3, 1, 1);
+  } else {
+    ctx.fillRect(x-1, y+1, 2, 2); ctx.fillRect(x+5, y+1, 2, 2);
+    ctx.fillRect(x-2, y+2, 1, 1); ctx.fillRect(x+7, y+2, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* the cat's tail, curling with a slow periodic flick */
+function drawTail(t){
+  const a0 = -0.9 + 0.55*Math.sin(TAU*t/LOOP + 1.7);
+  let x = 154, y = 175;
+  ctx.fillStyle = '#05070f';
+  for(let i = 0; i < 4; i++){
+    const ang = a0 + i*0.6 + 0.15*Math.sin(TAU*2*t/LOOP + i);
+    x += Math.cos(ang)*3; y += Math.sin(ang)*3;
+    ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
+  }
+}
+
+/* pumpkin face + inner flame */
+function drawPumpkinFace(t){
+  const f = flick(t, 6.0);
+  ctx.globalAlpha = 0.55 + 0.45*f;
+  ctx.fillStyle = '#ffd77e';
+  ctx.fillRect(61, 235, 1, 1);
+  ctx.fillRect(60, 236, 3, 1);
+  ctx.fillRect(59, 237, 5, 1);
+  ctx.fillRect(73, 235, 1, 1);
+  ctx.fillRect(72, 236, 3, 1);
+  ctx.fillRect(71, 237, 5, 1);
+  ctx.fillRect(59, 242, 17, 1);
+  ctx.fillRect(59, 243, 3, 1); ctx.fillRect(64, 243, 4, 1); ctx.fillRect(70, 243, 4, 1);
+  ctx.fillRect(62, 244, 4, 1); ctx.fillRect(69, 244, 4, 1);
+  ctx.globalAlpha = (0.5 + 0.5*f) * 0.9;
+  ctx.fillStyle = '#fff1bf';
+  ctx.fillRect(65, 242, 4, 2);
+  ctx.globalAlpha = 1;
+}
+
+/* windows & lanterns: bright panes + warm glows, all flickering */
+const panes = [
+  { x: 255, y: 75,  w: 22, h: 18, mx: 265, my: 83, s: 1.1 },
+  { x: 205, y: 133, w: 20, h: 24, mx: 214, my: 144, s: 2.2 },
+  { x: 305, y: 133, w: 20, h: 24, mx: 314, my: 144, s: 3.3 }
+];
+function drawLights(t){
+  const f1 = flick(t, 1.1), f2 = flick(t, 2.2), f3 = flick(t, 3.3);
+  const fp = flick(t, 4.4), fl = flick(t, 5.5), fk = flick(t, 6.0);
+
+  for(let i = 0; i < 3; i++){
+    const p = panes[i], f = [f1, f2, f3][i];
+    ctx.globalAlpha = 0.18 + 0.55*f;
+    ctx.fillStyle = '#ffb85c';
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#4a3212';
+    ctx.fillRect(p.mx, p.y, 2, p.h);
+    ctx.fillRect(p.x, p.my, p.w, 2);
+  }
+  /* cat silhouette in the tower window */
+  ctx.globalAlpha = 0.85; ctx.fillStyle = '#141019';
+  ctx.fillRect(262, 86, 6, 6);
+  ctx.fillRect(263, 83, 4, 3);
+  ctx.fillRect(263, 82, 1, 1); ctx.fillRect(266, 82, 1, 1);
+  ctx.globalAlpha = 1;
+
+  ctx.globalAlpha = 0.35 + 0.6*fp;
+  ctx.fillStyle = '#ffd98a'; ctx.fillRect(285, 151, 6, 8);
+  ctx.fillStyle = '#223364'; ctx.fillRect(287, 152, 2, 8);
+  ctx.globalAlpha = 0.35 + 0.6*fl;
+  ctx.fillStyle = '#ffd98a'; ctx.fillRect(420, 122, 11, 10);
+  ctx.fillStyle = '#223364'; ctx.fillRect(424, 122, 2, 10); ctx.fillRect(420, 126, 11, 2);
+  ctx.globalAlpha = 1;
+
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.50*f1; ctx.drawImage(G_WARM, 266-22, 84-22, 44, 44);
+  ctx.globalAlpha = 0.45*f2; ctx.drawImage(G_WARM, 215-20, 145-20, 40, 40);
+  ctx.globalAlpha = 0.45*f3; ctx.drawImage(G_WARM, 315-20, 145-20, 40, 40);
+  ctx.globalAlpha = 0.50*fp; ctx.drawImage(G_AMBER, 288-15, 155-15, 30, 30);
+  ctx.globalAlpha = 0.55*fl; ctx.drawImage(G_AMBER, 425-42, 127-42, 84, 84);
+  ctx.globalAlpha = 0.35 + 0.30*fk; ctx.drawImage(G_WARM, 67-31, 241-31, 62, 62);
+  ctx.restore();
+
+  /* warm spill in front of the door */
+  ctx.globalAlpha = 0.10 + 0.08*f1;
+  ctx.fillStyle = '#ff9f43';
+  for(let dy = -3; dy <= 3; dy++){
+    const w = Math.round(11 * Math.sqrt(1 - (dy*dy)/16));
+    ctx.fillRect(264 - w, 200 + dy, w*2, 1);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* a slow cloud drifting across the moon, once per loop */
+function drawMoonCloud(t){
+  const q = t/LOOP;
+  const a = 0.9 * Math.sin(Math.PI * q);
+  if(a < 0.02) return;
+  drawCloud(CLOUD_MOON, 12 + q*110, 42, '#151f3e', a);
+}
+
+/* ambient clouds, gentle periodic bob */
+function drawClouds(t){
+  drawCloud(CLOUD_A, 150 + 5*Math.sin(TAU*t/LOOP + 0.5), 34, '#141d3a', 0.95);
+  drawCloud(CLOUD_B, 340 + 6*Math.sin(TAU*t/LOOP + 2.4), 52, '#131c39', 0.95);
+  drawCloud(CLOUD_C, 250 + 4*Math.sin(TAU*t/LOOP + 4.1), 82, '#16203f', 0.90);
+}
+
+/* ============================================================================
+   COMPOSITE — one frame
+   ============================================================================ */
+function render(t){
+  ctx.drawImage(base, 0, 0);
+  drawStars(t);
+  drawBat(t);
+  drawMoonCloud(t);
+  drawClouds(t);
+  drawLights(t);
+  drawPumpkinFace(t);
+  drawSparks(t);
+  drawTail(t);
+  drawReflections(t);
+  drawSmoke(t);
+  drawRainLayer(rainFar, t);
+  drawFog(fog1, t);
+  drawRainLayer(rainMid, t);
+  drawFog(fog2, t);
+  drawRainLayer(rainNear, t);
+}
+
+function frame(now){
+  render((now/1000) % LOOP);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
